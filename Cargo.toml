@@ -1,0 +1,30 @@
+[package]
+name = "rust_practice"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+# 以 clippy / rustc lint 落實 Google Rust Style Guide 中可被機器檢查的條目。
+# 教學網站的 scripts/check_snippets.py 使用同一組規則檢查每一段範例程式碼。
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# 優先使用 &str / &[T] 而非 &String / &Vec<T>（預設已啟用 ptr_arg）。
+# 禁用 glob import（Style Guide: Code organization）。
+wildcard_imports = "warn"
+enum_glob_use = "warn"
+# 以 expect("原因") 取代 unwrap()（Style Guide: Implementation concerns）。
+unwrap_used = "warn"
+# 不明確的 bool 參數改用 enum（Style Guide: Function inputs and outputs）。
+fn_params_excessive_bools = "warn"
+# 不要用 clone() 規避借用檢查。
+redundant_clone = "warn"
+clone_on_ref_ptr = "warn"
+# 文件需說明 panic / error 條件。
+missing_panics_doc = "warn"
+missing_errors_doc = "warn"
+# 實作 len() 就要有 is_empty()；有 new() 就要有 Default（預設已啟用）。
+len_without_is_empty = "warn"
+new_without_default = "warn"

@@ -1,0 +1,4 @@
+# Google Rust Style Guide 建議 max_width = 100。
+# 其他建議（imports_granularity = "Module"、hex_literal_case = "Lower"、
+# format_macro_matchers = true）目前需要 nightly rustfmt，stable 無法啟用。
+max_width = 100

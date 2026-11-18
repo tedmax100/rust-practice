@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust 入門教學</title>
+<style>
+  :root { --bg:#fff; --fg:#202124; --muted:#5f6368; --card:#f8f9fa; --line:#dadce0; --accent:#b7410e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#202124; --fg:#e8eaed; --muted:#9aa0a6; --card:#292a2d; --line:#3c4043; --accent:#f08c4a; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.7 system-ui,"Noto Sans TC",sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:48px 16px; }
+  h1 { font-size:2rem; margin-bottom:.25em; }
+  p.lead { color:var(--muted); margin-top:0; }
+  a.card { display:block; padding:20px 24px; margin:16px 0; background:var(--card);
+           border:1px solid var(--line); border-radius:8px; color:inherit; text-decoration:none; }
+  a.card:hover { border-color:var(--accent); }
+  a.card h2 { margin:0 0 4px; font-size:1.2rem; color:var(--accent); }
+  a.card span { color:var(--muted); font-size:.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Rust 入門教學</h1>
+  <p class="lead">每個範例都對照 Google Rust Style Guide，並由 rustfmt / clippy 自動檢查。</p>
+  <a class="card" href="rust-style-basics/">
+    <h2>Rust 入門：從第一行就寫對</h2>
+    <p>變數、所有權、struct / enum、錯誤處理、trait、測試與文件。</p>
+    <span>9 個章節 · 約 90 分鐘</span>
+  </a>
+</main>
+</body>
+</html>

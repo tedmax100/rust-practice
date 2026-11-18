@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""檢查教學 Markdown 內的每一段 ```rust 範例，確保教學本身遵守 Google Rust Style Guide。
+
+每段範例必須是完整、可獨立編譯的程式（含 `fn main`），並通過：
+  1. rustfmt --check（讀取專案根目錄的 rustfmt.toml，max_width = 100）
+  2. clippy-driver -D warnings，並啟用與 Cargo.toml [lints] 相同的規則
+  3. rustc --test 編譯並執行其中的 #[test]
+
+第一行含有「反例」的區塊是刻意示範錯誤寫法，會被略過。
+
+用法：python3 scripts/check_snippets.py codelabs/tutorials/*.md
+"""
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+FENCE = re.compile(r"^```rust\s*\n(.*?)^```", re.S | re.M)
+
+# 與 Cargo.toml 的 [lints] 保持一致。
+LINT_FLAGS = [
+    "-D", "warnings",
+    "-F", "unsafe_code",
+    "-W", "clippy::wildcard_imports",
+    "-W", "clippy::enum_glob_use",
+    "-W", "clippy::unwrap_used",
+    "-W", "clippy::fn_params_excessive_bools",
+    "-W", "clippy::redundant_clone",
+    "-W", "clippy::clone_on_ref_ptr",
+    "-W", "clippy::missing_panics_doc",
+    "-W", "clippy::missing_errors_doc",
+    "-W", "clippy::len_without_is_empty",
+    "-W", "clippy::new_without_default",
+]
+
+
+def run(cmd, cwd):
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+
+def check_block(source, workdir, label):
+    errors = []
+    src = workdir / "snippet.rs"
+    src.write_text(source, encoding="utf-8")
+
+    fmt = run(["rustfmt", "--check", "--edition", "2021",
+               "--config-path", str(ROOT / "rustfmt.toml"), str(src)], workdir)
+    if fmt.returncode != 0:
+        errors.append(f"rustfmt 與標準格式不同：\n{fmt.stdout}{fmt.stderr}")
+
+    lint = run(["clippy-driver", "--edition", "2021", "--test", "--crate-name", "snippet",
+                "-o", str(workdir / "snippet_bin"), *LINT_FLAGS, str(src)], workdir)
+    if lint.returncode != 0:
+        errors.append(f"clippy / rustc：\n{lint.stderr}")
+    else:
+        test = run([str(workdir / "snippet_bin")], workdir)
+        if test.returncode != 0:
+            errors.append(f"測試失敗：\n{test.stdout}{test.stderr}")
+    return [f"{label}: {e}" for e in errors]
+
+
+def main(paths):
+    problems, checked, skipped = [], 0, 0
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = pathlib.Path(tmp)
+        for path in paths:
+            text = pathlib.Path(path).read_text(encoding="utf-8")
+            for match in FENCE.finditer(text):
+                code = match.group(1)
+                line = text.count("\n", 0, match.start()) + 1
+                if "反例" in code.split("\n", 1)[0]:
+                    skipped += 1
+                    continue
+                checked += 1
+                if "fn main" not in code:
+                    problems.append(f"{path}:{line}: 範例必須包含 fn main 才能獨立編譯")
+                    continue
+                problems += check_block(code, workdir, f"{path}:{line}")
+    for problem in problems:
+        print(problem)
+    print(f"snippets: checked {checked}, skipped {skipped} 反例, problems {len(problems)}")
+    sys.exit(1 if problems else 0)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

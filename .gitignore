@@ -1,0 +1,4 @@
+/target
+
+# Codelabs 建置產物（由 CI 產生）
+/codelabs/generated/

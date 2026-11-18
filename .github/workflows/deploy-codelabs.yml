@@ -1,0 +1,65 @@
+name: Deploy Codelabs to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'codelabs/**'
+      - 'scripts/**'
+      - 'Cargo.toml'
+      - 'rustfmt.toml'
+      - '.github/workflows/deploy-codelabs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Install claat
+        run: |
+          curl -fsSL -o claat https://github.com/googlecodelabs/tools/releases/download/v2.2.6/claat-linux-amd64
+          chmod +x claat
+          ./claat version
+
+      # 先確認專案本身遵守風格指南，再建置教學網站。
+      - name: Check project style
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      # 內含：callout lint、範例程式 rustfmt/clippy 檢查、claat 匯出、主題。
+      - name: Build site
+        run: CLAAT="$PWD/claat" scripts/build_site.sh
+
+      - uses: actions/configure-pages@v4
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./codelabs/generated
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
