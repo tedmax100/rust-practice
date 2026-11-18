@@ -827,6 +827,153 @@ Rust 的欄位也可以個別決定是否公開，粒度比 Go 的整個 package
 - `assert!` 與 `assert_eq!` 要附上說明訊息。
 - 不使用 `use x::*`，只有測試模組可以用 `use super::*`。
 
+## 建置、跨平台編譯與容器化
+Duration: 12
+
+### 跨平台編譯：GOOS / GOARCH 與 target
+
+Go 的跨平台編譯非常輕鬆，因為工具鏈自帶各平台的編譯器與連結器：
+
+```console
+GOOS=linux GOARCH=arm64 go build
+```
+
+Rust 也能跨平台編譯，但需要自己準備更多東西：
+
+| | Go | Rust |
+|---|----|------|
+| 指定目標 | `GOOS` 與 `GOARCH` | `--target <三元組>`，例如 `aarch64-unknown-linux-gnu` |
+| 標準函式庫 | 內建所有平台 | 先 `rustup target add <三元組>` |
+| 連結器 | 自帶 | **使用系統的連結器**，跨平台時要另外安裝並設定 |
+| 靜態執行檔 | 預設靜態（`CGO_ENABLED=0`） | 預設動態連結 glibc；用 `musl` 目標可靜態連結 |
+| 列出支援平台 | `go tool dist list` | `rustc --print target-list` |
+
+三元組的格式是「架構-廠商-系統」，例如 `x86_64-unknown-linux-musl`、`aarch64-apple-darwin`、`x86_64-pc-windows-msvc`。
+
+### 編出靜態執行檔
+
+```console
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+產物在 `target/x86_64-unknown-linux-musl/release/`。這等同於 Go 的 `CGO_ENABLED=0 go build`，適合放進最小的容器映像。
+
+Positive
+: 本專案用這個方式在 Docker 內建置，並以 file 指令確認產物是 static-pie linked，也就是完全靜態的執行檔。
+
+### 真正的跨平台：不要硬在一台機器上編
+
+連結器是跨平台編譯最麻煩的地方，常見的處理方式：
+
+| 方式 | 適用情境 |
+|------|----------|
+| **`cargo-zigbuild`** | 用 zig 當連結器，在 Linux 上編各種 Linux 架構與指定 glibc 版本，不用裝 gcc 交叉工具鏈 |
+| **`cross`** | 在預先配好工具鏈的 Docker 容器內編譯 |
+| **CI 矩陣（推薦）** | 在 GitHub Actions 讓每個平台各用自己的 runner 原生編譯 |
+
+Negative
+: 從 Linux 編 macOS 或 Windows（MSVC）執行檔需要 SDK 或額外工具（例如 cargo-xwin），設定成本高。直接用 macos-latest 與 windows-latest 的 runner 編，是最省事的做法。
+
+### GitHub Actions 多平台矩陣
+
+`.github/workflows/build-binaries.yml`（節錄）：
+
+```yaml
+jobs:
+  binaries:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust_practice-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/rust_practice${{ runner.os == 'Windows' && '.exe' || '' }}
+```
+
+`--locked` 要求建置必須完全依照 `Cargo.lock`，如果 lock 與 `Cargo.toml` 不一致就失敗，確保 CI 的結果可重現。
+
+### Dockerfile：多階段建置
+
+Go 與 Rust 的容器化想法相同：編譯器只留在建置階段，最終映像只含執行檔。
+
+`Dockerfile`（動態連結 glibc，執行階段用 distroless）：
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM rust:1.78 AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --locked \
+    && cp target/release/rust_practice /rust_practice
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=builder /rust_practice /rust_practice
+ENTRYPOINT ["/rust_practice"]
+```
+
+`Dockerfile.musl`（靜態連結，執行階段是 scratch）：
+
+```dockerfile
+# syntax=docker/dockerfile:1
+FROM rust:1.78 AS builder
+RUN rustup target add x86_64-unknown-linux-musl
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --locked --target x86_64-unknown-linux-musl \
+    && cp target/x86_64-unknown-linux-musl/release/rust_practice /rust_practice
+
+FROM scratch
+COPY --from=builder /rust_practice /rust_practice
+USER 65532:65532
+ENTRYPOINT ["/rust_practice"]
+```
+
+### 實測結果
+
+| 映像 | 基底 | 大小 |
+|------|------|------|
+| `rust-practice:glibc` | `distroless/cc-debian12` | 24.1 MB |
+| `rust-practice:musl` | `scratch` | 3.98 MB |
+
+兩個映像都能正常執行並輸出程式內容。
+
+### 與 Go 容器化的差異
+
+- **glibc 與 musl 的選擇**：Go 預設靜態，所以幾乎都能放進 `scratch`。Rust 預設動態連結，要用 `scratch` 必須改編 musl 目標，或改用 `distroless/cc` 這類帶 glibc 的精簡基底。
+- **依賴快取**：Go 的 module cache 容易掛載。Rust 沒有快取時，只要改一行原始碼就會重新編譯所有依賴。上面用 BuildKit 的 `--mount=type=cache` 保留 registry 與 `target/`；依賴很多的專案也常用 `cargo-chef` 把「編依賴」與「編自己的程式」拆成不同的 layer。
+- **musl 的注意事項**：musl 的記憶體配置器效能通常比 glibc 慢，對配置很頻繁的程式，要實測；部分依賴 C 函式庫的 crate 也可能不好在 musl 上編譯。
+- **`.dockerignore`**：一定要排除 `target/`，否則會把數 GB 的編譯產物送進 build context。
+- **非 root 執行**：distroless 提供 `:nonroot` 標籤；`scratch` 用 `USER 65532:65532`。
+
+### 風格指南與安全相關
+
+- 建置時加 `--locked`，與 `Cargo.lock` 不一致就失敗，防止依賴被悄悄更新。
+- Dependabot 的 `docker` 生態可以追蹤 Dockerfile 的基底映像版本。
+- `rust:1.78` 這類固定版本的基底映像能讓建置可重現；升級由 Dependabot 提醒。
+
 ## CI 與供應鏈安全：golangci-lint 與 govulncheck
 Duration: 12
 
@@ -994,6 +1141,8 @@ Duration: 5
 | 格式化 | `gofmt` | `cargo fmt` |
 | 靜態檢查 | `go vet` | `cargo clippy` |
 | 漏洞掃描 | `govulncheck` | `cargo audit`、`cargo deny` |
+| 跨平台編譯 | `GOOS` / `GOARCH` | `--target` 加 `rustup target add` |
+| 靜態執行檔 | `CGO_ENABLED=0` | `x86_64-unknown-linux-musl` |
 | 空值 | `nil` | `Option<T>` |
 | 錯誤 | `(T, error)` | `Result<T, E>` 與 `?` |
 | 抽象 | interface（隱式） | trait（明確） |

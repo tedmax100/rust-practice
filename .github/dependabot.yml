@@ -10,3 +10,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # Dockerfile 的基底映像
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

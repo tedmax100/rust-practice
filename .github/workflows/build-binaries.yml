@@ -1,0 +1,56 @@
+name: Build binaries
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  binaries:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust_practice-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/rust_practice${{ runner.os == 'Windows' && '.exe' || '' }}
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build glibc image (distroless)
+        run: docker build -t rust-practice:glibc .
+      - name: Build musl image (scratch)
+        run: docker build -f Dockerfile.musl -t rust-practice:musl .
+      - name: Image sizes and smoke test
+        run: |
+          docker images rust-practice --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+          docker run --rm rust-practice:musl
