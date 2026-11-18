@@ -2,6 +2,8 @@
 name = "rust_practice"
 version = "0.1.0"
 edition = "2021"
+# 練習專案，不發布到 crates.io（cargo deny 會因此略過本 crate 的授權檢查）。
+publish = false
 
 [dependencies]
 

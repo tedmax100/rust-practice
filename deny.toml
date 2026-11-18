@@ -7,6 +7,8 @@
 ignore = []
 
 [licenses]
+# publish = false 的本地 crate（本專案自己）不需要宣告授權。
+private = { ignore = true }
 # 只允許這些授權；其他授權會讓檢查失敗。
 allow = [
     "MIT",
