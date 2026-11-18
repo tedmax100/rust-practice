@@ -8,6 +8,8 @@ Go 範例（```go）以 gofmt -d 與 go vet 檢查。
   3. rustc --test 編譯並執行其中的 #[test]
 
 第一行含有「反例」的區塊是刻意示範錯誤寫法，會被略過。
+第一行為「// excerpt: <路徑>」的 Rust 區塊是實際範例專案的節錄，只檢查其內容
+與該檔案逐字相同（範例專案本身由 CI 以 fmt / clippy / test 檢查）。
 
 用法：python3 scripts/check_snippets.py codelabs/tutorials/*.md
 """
@@ -86,6 +88,16 @@ def main(paths):
                 line = text.count("\n", 0, match.start()) + 1
                 if "反例" in code.split("\n", 1)[0]:
                     skipped += 1
+                    continue
+                first_line = code.split("\n", 1)[0]
+                if lang == "rust" and first_line.startswith("// excerpt: "):
+                    checked += 1
+                    source = ROOT / first_line[len("// excerpt: "):].strip()
+                    body = code.split("\n", 1)[1].rstrip("\n")
+                    if not source.is_file():
+                        problems.append(f"{path}:{line}: 找不到節錄來源 {source}")
+                    elif body not in source.read_text(encoding="utf-8"):
+                        problems.append(f"{path}:{line}: 節錄內容與 {source.name} 不一致")
                     continue
                 checked += 1
                 if lang == "go":

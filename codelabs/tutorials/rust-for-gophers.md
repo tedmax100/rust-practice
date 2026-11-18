@@ -704,7 +704,7 @@ fn main() {
 
 在 Rust，如果你把非執行緒安全的型別（例如 `Rc`）送進另一個執行緒，**編譯就會失敗**。這由 `Send` 與 `Sync` 這兩個 trait 在編譯期檢查，不需要 `-race` 去賭執行期剛好踩到。
 
-### async 與 tokio
+### async 與 tokio（下一章有完整範例）
 
 Rust 的標準函式庫沒有內建 goroutine 風格的 runtime。需要大量輕量並發（例如網路服務）時，使用 `async` / `await`，並搭配 `tokio` 這類 crate 提供的 runtime：
 
@@ -826,6 +826,428 @@ Rust 的欄位也可以個別決定是否公開，粒度比 Go 的整個 package
 - 公開 API 都要有 `///` 文件，註明 panic 與錯誤條件，模組與 crate 用 `//!`。
 - `assert!` 與 `assert_eq!` 要附上說明訊息。
 - 不使用 `use x::*`，只有測試模組可以用 `use super::*`。
+
+## async 與 tokio：goroutine 的另一種對應
+Duration: 15
+
+這一章用一個**可實際執行的範例專案** `examples/async-tokio/` 來教學：每個 Go 並發模式都有對應的 Rust 寫法，專案由 CI 以 `cargo fmt`、`clippy -D warnings` 與 `cargo test` 檢查。
+
+### 三個和 goroutine 最大的差異
+
+1. **沒有內建 runtime**：`async` 只是語法，要有執行 future 的 runtime 才會動。絕大多數專案使用 tokio。
+2. **future 是惰性的**：呼叫 `async fn` 只會得到一個 future，不 `.await` 也不 `spawn` 就什麼都不會發生。Go 的 `go f()` 一呼叫就開始跑。
+3. **編譯器檢查資料競爭**：丟進 `tokio::spawn` 的 future 必須是 `Send`，不安全的共享會在編譯期就被擋下。
+
+Negative
+: async Rust 的學習曲線比 goroutine 陡峭。如果你只是要同時做幾件事，先用上一章的 thread 與 mpsc 就夠了，真的需要大量輕量並發（網路服務）才引入 async。
+
+### 專案設定
+
+`examples/async-tokio/Cargo.toml`：
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+```
+
+- `macros`：提供 `#[tokio::main]`、`#[tokio::test]` 與 `select!`。
+- `rt-multi-thread`：多執行緒的排程器，類似 Go 的 GOMAXPROCS 多核排程。
+- `sync`：`mpsc`、`oneshot` 等同步原語。
+- `time`：`sleep`、`timeout`。
+- `test-util`：測試用的**虛擬時間**，只放在 `dev-dependencies`。
+
+Positive
+: 初學時可以直接寫 features = ["full"]，但正式專案建議只開需要的功能，編譯更快、依賴也更少。
+
+### 對照總表
+
+| Go | tokio |
+|----|-------|
+| `go f()` | `tokio::spawn(f())` |
+| `sync.WaitGroup` | `JoinSet`，或對 `JoinHandle` 做 `.await` |
+| `chan T` | `tokio::sync::mpsc` |
+| 只傳一次結果的 channel | `tokio::sync::oneshot` |
+| 廣播、最新值 | `tokio::sync::broadcast`、`watch` |
+| `select` | `tokio::select!` |
+| `time.After` | `tokio::time::sleep`、`tokio::time::timeout` |
+| `context.WithCancel` | `tokio_util::sync::CancellationToken` |
+| `errgroup` | `JoinSet`、`tokio::try_join!` |
+| `sync.Once` | `std::sync::OnceLock` |
+
+### 模式一：spawn 與等待全部完成
+
+Go 用 goroutine 加 WaitGroup（上一章已示範）。tokio 用 `JoinSet`，它同時負責「啟動」與「收集結果」：
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+/// 對應 Go 的 goroutine 加 WaitGroup：開出多個 task 並等全部完成。
+async fn run_workers() -> Vec<u32> {
+    let mut tasks = JoinSet::new();
+    for worker in 0..3_u32 {
+        tasks.spawn(async move { worker * 10 });
+    }
+    let mut results = Vec::new();
+    while let Some(outcome) = tasks.join_next().await {
+        results.push(outcome.expect("worker 不應該 panic"));
+    }
+    results.sort_unstable();
+    results
+}
+```
+
+- `tasks.spawn(...)` 開出一個 task。
+- `join_next().await` 每次回傳下一個完成的 task 結果，沒有 task 時回傳 `None`。
+- 結果是 `Result`，task 如果 panic 就是 `Err`，所以用 `expect` 說明為什麼不應該發生。
+- `JoinSet` 被 drop 時會**取消所有還沒完成的 task**，不會留下孤兒。
+
+### 模式二：channel
+
+Go：
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	values := make(chan int, 8)
+	go func() {
+		defer close(values)
+		for value := 1; value <= 3; value++ {
+			values <- value
+		}
+	}()
+	total := 0
+	for value := range values {
+		total += value
+	}
+	fmt.Println(total)
+}
+```
+
+Rust：
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+/// 對應 Go 的 `chan int`：生產者送出 1 到 3，消費者加總。
+async fn sum_from_channel() -> u32 {
+    let (sender, mut receiver) = mpsc::channel(8);
+    tokio::spawn(async move {
+        for value in 1..=3_u32 {
+            sender.send(value).await.expect("receiver 仍存在");
+        }
+    });
+    let mut total = 0;
+    while let Some(value) = receiver.recv().await {
+        total += value;
+    }
+    total
+}
+```
+
+對照：
+
+- `mpsc::channel(8)` 的 8 是緩衝容量，和 `make(chan int, 8)` 相同；容量滿了 `send().await` 會等待。
+- Go 要自己 `close(values)`；Rust 在**所有 `Sender` 都被 drop** 時 channel 自動關閉，`recv()` 回傳 `None`。這裡 `sender` 被移進 task，task 結束就 drop。
+- `while let Some(value) = receiver.recv().await` 對應 `for value := range values`。
+
+### 模式三：oneshot
+
+Go 常用容量 1 的 channel 傳一次結果：
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	result := make(chan int, 1)
+	go func() {
+		result <- 6 * 7
+	}()
+	fmt.Println(<-result)
+}
+```
+
+tokio 有專用的 `oneshot`，型別上就表達了「只會送一次」：
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+/// 對應 Go 中「只傳一次結果」的 channel。
+async fn compute_in_background() -> u32 {
+    let (sender, receiver) = oneshot::channel();
+    tokio::spawn(async move {
+        sender.send(6 * 7).expect("receiver 仍在等待");
+    });
+    receiver.await.expect("sender 不應該在送出前被丟棄")
+}
+```
+
+`oneshot::Sender::send` 會消耗自己（所有權移轉），所以**不可能**送第二次，這是 Go 的 channel 做不到的編譯期保證。
+
+### 模式四：select 與逾時
+
+Go：
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+)
+
+func fetchWithTimeout(delay, limit time.Duration) (string, bool) {
+	done := make(chan string, 1)
+	go func() {
+		time.Sleep(delay)
+		done <- "完成"
+	}()
+	select {
+	case result := <-done:
+		return result, true
+	case <-time.After(limit):
+		return "", false
+	}
+}
+
+func main() {
+	fmt.Println(fetchWithTimeout(50*time.Millisecond, 500*time.Millisecond))
+	fmt.Println(fetchWithTimeout(500*time.Millisecond, 50*time.Millisecond))
+}
+```
+
+Rust：
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+/// 對應 Go 的 `select` 加 `time.After`：工作超過時限就放棄。
+async fn fetch_with_timeout(delay: Duration, limit: Duration) -> Option<&'static str> {
+    let work = async {
+        time::sleep(delay).await;
+        "完成"
+    };
+    tokio::select! {
+        result = work => Some(result),
+        () = time::sleep(limit) => None,
+    }
+}
+```
+
+重要差異：**`select!` 選中一個分支後，其他分支的 future 會被 drop，也就是被取消**。上面逾時分支勝出時，`work` 會在下一個 `.await` 的位置停止。Go 的做法則是 goroutine 仍在背景跑（甚至洩漏），要自己用 context 通知它停止。
+
+Positive
+: 單純的逾時有更簡短的寫法：time::timeout(limit, work).await 會回傳 Result，逾時時是 Err。select! 則用在要同時等多個不同來源的情況。
+
+### 模式五：取消（context）
+
+Go 用 `context.Context` 傳遞取消訊號：
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+func tickUntilCancelled(ctx context.Context, ticks chan<- int) {
+	count := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+			count++
+			ticks <- count
+		}
+	}
+}
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan int, 64)
+	done := make(chan struct{})
+	go func() {
+		tickUntilCancelled(ctx, ticks)
+		close(done)
+	}()
+	time.Sleep(35 * time.Millisecond)
+	cancel()
+	<-done
+	close(ticks)
+	received := 0
+	for range ticks {
+		received++
+	}
+	fmt.Println(received)
+}
+```
+
+Rust 用 `tokio-util` 的 `CancellationToken`：
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+/// 對應 Go 的 `context.WithCancel`：每 10 毫秒送出一次計數，直到被取消。
+async fn tick_until_cancelled(token: CancellationToken, ticks: mpsc::Sender<u32>) {
+    let mut count = 0;
+    loop {
+        tokio::select! {
+            () = token.cancelled() => break,
+            () = time::sleep(Duration::from_millis(10)) => {
+                count += 1;
+                if ticks.send(count).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+```
+
+呼叫端負責啟動、等待後取消，並收集結果：
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+/// 啟動計數 task，等待一段時間後取消，回傳收到的計數次數。
+async fn count_ticks(run_for: Duration) -> usize {
+    let token = CancellationToken::new();
+    let (sender, mut receiver) = mpsc::channel(64);
+    let handle = tokio::spawn(tick_until_cancelled(token.clone(), sender));
+    time::sleep(run_for).await;
+    token.cancel();
+    handle.await.expect("計數 task 不應該 panic");
+    let mut received = 0;
+    while receiver.recv().await.is_some() {
+        received += 1;
+    }
+    received
+}
+```
+
+- `token.clone()` 是便宜的，可以分給多個 task，任何一份呼叫 `cancel()` 都會讓所有 `cancelled()` 完成。
+- 和 Go 的 `context` 不同，token **不是每個函式的第一個參數的慣例**，也沒有內建逾時與 value；逾時用 `timeout`，傳值用一般參數。
+
+### 模式六：只初始化一次（sync.Once）
+
+Go：
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+var (
+	appName     string
+	appNameOnce sync.Once
+)
+
+func getAppName() string {
+	appNameOnce.Do(func() {
+		appName = "async-tokio-demo"
+	})
+	return appName
+}
+
+func main() {
+	fmt.Println(getAppName())
+}
+```
+
+Rust：
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+/// 對應 Go 的 `sync.Once`：第一次呼叫時才初始化，之後重複使用。
+fn app_name() -> &'static str {
+    static APP_NAME: OnceLock<String> = OnceLock::new();
+    APP_NAME.get_or_init(|| String::from("async-tokio-demo"))
+}
+```
+
+`OnceLock<T>` 把「值」與「只初始化一次」綁在一起，不需要像 Go 那樣另外放一個變數。`OnceLock` 自 Rust 1.70 穩定；`LazyLock`（宣告時就給初始化函式）自 1.80 穩定。
+
+### 在 main 串起來
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+#[tokio::main]
+async fn main() {
+    println!("應用程式：{}", app_name());
+    println!("workers：{:?}", run_workers().await);
+    println!("channel 加總：{}", sum_from_channel().await);
+    println!("oneshot：{}", compute_in_background().await);
+    let fast = fetch_with_timeout(Duration::from_millis(50), Duration::from_millis(500)).await;
+    let slow = fetch_with_timeout(Duration::from_millis(500), Duration::from_millis(50)).await;
+    println!("快的工作：{fast:?}，慢的工作：{slow:?}");
+    println!(
+        "取消前的計數：{}",
+        count_ticks(Duration::from_millis(35)).await
+    );
+}
+```
+
+`#[tokio::main]` 會建立 runtime 並把 `async fn main` 跑到結束，等同於你在同步的 `main` 裡手動建立 runtime 再 `block_on`。
+
+### 測試非同步程式碼：虛擬時間
+
+```rust
+// excerpt: examples/async-tokio/src/main.rs
+    #[tokio::test(start_paused = true)]
+    async fn timeout_only_when_too_slow() {
+        let one_second = Duration::from_secs(1);
+        let fast = fetch_with_timeout(Duration::from_millis(100), one_second).await;
+        let slow = fetch_with_timeout(Duration::from_secs(2), one_second).await;
+        assert_eq!(fast, Some("完成"), "快的工作應該在時限內完成");
+        assert_eq!(slow, None, "慢的工作應該逾時");
+    }
+```
+
+`start_paused = true` 讓測試使用**虛擬時間**：所有 `sleep` 與 `timeout` 瞬間完成，但先後順序仍然正確，測試既快又不會因機器忙碌而不穩定。範例的逾時與取消測試都靠這個，沒有任何一個真的等待。Go 要做到這點，需要自己注入時鐘，或使用較新版本才有的 `testing/synctest`。
+
+### 常見陷阱
+
+| 陷阱 | 說明 |
+|------|------|
+| 在 async 裡做阻塞呼叫 | 例如 `std::thread::sleep` 或同步檔案 I/O，會卡住整條 worker 執行緒。改用 `tokio::time::sleep`，或用 `tokio::task::spawn_blocking` |
+| 持有 `std::sync::Mutex` 跨過 `.await` | 容易造成死結，且 guard 不是 `Send`，編譯器會擋。改用 `tokio::sync::Mutex`，或縮小鎖的範圍 |
+| 忘了 `.await` | future 沒被執行；編譯器會警告「unused future」，不要忽略 |
+| 以為 drop `JoinHandle` 會取消 task | 不會，task 會繼續在背景跑（detach）。要能取消就用 `JoinSet` 或 `abort()` |
+| `select!` 的分支被取消 | 被捨棄的 future 可能做到一半，必須是「取消安全」的 |
+
+### 風格指南相關
+
+- Google Rust Style Guide 對 async 沒有一般性的禁止；它提到「不使用 `async` / `.await`」是**特定專案（Chrome）**的規則，不是通用建議。
+- 風格指南的**「不要碰已被汙染的 mutex」**原則，在 async 同樣適用：對 `lock()` 的結果用 `expect` 說明理由。
+- 依賴要審慎：`tokio` 加上 `tokio-util` 會帶入一棵依賴樹，這個範例專案也納入了 `cargo audit` 與 `cargo deny` 的掃描。
+
+### 執行範例
+
+```console
+cd examples/async-tokio
+cargo run
+cargo test
+cargo clippy --all-targets -- -D warnings
+```
+
+執行結果：
+
+```text
+應用程式：async-tokio-demo
+workers：[0, 10, 20]
+channel 加總：6
+oneshot：42
+快的工作：Some("完成")，慢的工作：None
+取消前的計數：3
+```
 
 ## 建置、跨平台編譯與容器化
 Duration: 12
@@ -1149,6 +1571,8 @@ Duration: 5
 | 動態分派 | interface 值 | `Box<dyn Trait>` |
 | 並發 | `go` 與 channel | `thread::spawn` 與 `mpsc`，async 用 tokio |
 | 共享狀態 | `sync.Mutex` | `Arc<Mutex<T>>` |
+| select、逾時、取消 | `select`、`time.After`、`context` | `tokio::select!`、`timeout`、`CancellationToken` |
+| 只初始化一次 | `sync.Once` | `OnceLock` |
 | 零值 | 自動 | `Default` |
 | 記憶體 | GC | 所有權與借用 |
 | 測試 | `_test.go` | `#[cfg(test)]` |

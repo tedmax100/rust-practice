@@ -6,12 +6,16 @@ on:
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'examples/**/Cargo.toml'
+      - 'examples/**/Cargo.lock'
       - 'deny.toml'
       - '.github/workflows/security.yml'
   pull_request:
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'examples/**/Cargo.toml'
+      - 'examples/**/Cargo.lock'
       - 'deny.toml'
   schedule:
     # 每週一 02:00 UTC。新漏洞會在你沒改程式碼時出現，所以要定期掃描。
@@ -34,11 +38,15 @@ jobs:
 
       # 以 Cargo.lock 比對 RustSec 漏洞資料庫（類似 govulncheck，但只比對版本）。
       - name: cargo audit
-        run: cargo audit
+        run: |
+          cargo audit
+          cargo audit -f examples/async-tokio/Cargo.lock
 
       # 漏洞、授權、禁用套件與依賴來源，規則見 deny.toml。
       - name: cargo deny
-        run: cargo deny check
+        run: |
+          cargo deny check
+          cargo deny --manifest-path examples/async-tokio/Cargo.toml check
 
       # 找出沒用到的依賴（類似 go mod tidy 的清理效果）。
       - name: cargo machete

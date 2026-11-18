@@ -6,6 +6,7 @@ on:
     paths:
       - 'codelabs/**'
       - 'scripts/**'
+      - 'examples/**'
       - 'Cargo.toml'
       - 'rustfmt.toml'
       - '.github/workflows/deploy-codelabs.yml'
@@ -42,6 +43,11 @@ jobs:
       # 先確認專案本身遵守風格指南，再建置教學網站。
       - name: Check project style
         run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          # 教學引用的範例專案（含外部依賴 tokio）也要通過同樣的檢查。
+          cd examples/async-tokio
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
           cargo test

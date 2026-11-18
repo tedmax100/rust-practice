@@ -1,0 +1,28 @@
+[package]
+name = "async-tokio"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+# start_paused 讓測試使用虛擬時間，sleep 不需要真的等待。
+tokio = { version = "1", features = ["test-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+wildcard_imports = "warn"
+enum_glob_use = "warn"
+unwrap_used = "warn"
+fn_params_excessive_bools = "warn"
+redundant_clone = "warn"
+clone_on_ref_ptr = "warn"
+missing_panics_doc = "warn"
+missing_errors_doc = "warn"
+len_without_is_empty = "warn"
+new_without_default = "warn"
