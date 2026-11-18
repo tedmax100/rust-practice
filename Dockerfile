@@ -2,7 +2,7 @@
 # 多階段建置：編譯器只存在於 builder 階段，最終映像只含執行檔。
 # 動態連結 glibc，執行階段使用 distroless/cc。
 
-FROM rust:1.78 AS builder
+FROM rust:1.99 AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

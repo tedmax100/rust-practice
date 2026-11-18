@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # 以 musl 靜態連結，最終映像是 scratch（只有一個執行檔），做法與 Go 的 CGO_ENABLED=0 相同。
 
-FROM rust:1.78 AS builder
+FROM rust:1.99 AS builder
 RUN rustup target add x86_64-unknown-linux-musl
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
