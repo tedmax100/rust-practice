@@ -1,0 +1,30 @@
+# cargo-deny 設定：授權、禁用套件、依賴來源、已知漏洞。
+# 對應 Go 生態的 go-licenses、GOFLAGS=-mod=readonly、GOPRIVATE 與 govulncheck。
+# 文件：https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# RustSec 資料庫中的已知漏洞與「已被棄用」的套件。
+ignore = []
+
+[licenses]
+# 只允許這些授權；其他授權會讓檢查失敗。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+]
+
+[bans]
+# 同一個 crate 出現多個版本只警告。
+multiple-versions = "warn"
+# 禁止 `foo = "*"` 這種不明確的版本需求（對應 Style Guide 的依賴版本要求）。
+wildcards = "deny"
+
+[sources]
+# 只允許從 crates.io 取得依賴，不允許未知的 registry 或 git 來源。
+unknown-registry = "deny"
+unknown-git = "deny"

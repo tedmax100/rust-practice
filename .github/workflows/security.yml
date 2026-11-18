@@ -1,0 +1,45 @@
+name: Security
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/security.yml'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+  schedule:
+    # 每週一 02:00 UTC。新漏洞會在你沒改程式碼時出現，所以要定期掃描。
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit, cargo-deny, cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny,cargo-machete
+
+      # 以 Cargo.lock 比對 RustSec 漏洞資料庫（類似 govulncheck，但只比對版本）。
+      - name: cargo audit
+        run: cargo audit
+
+      # 漏洞、授權、禁用套件與依賴來源，規則見 deny.toml。
+      - name: cargo deny
+        run: cargo deny check
+
+      # 找出沒用到的依賴（類似 go mod tidy 的清理效果）。
+      - name: cargo machete
+        run: cargo machete

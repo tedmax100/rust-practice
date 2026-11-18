@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Rust 依賴（Cargo.toml / Cargo.lock）
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+  # GitHub Actions 版本
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

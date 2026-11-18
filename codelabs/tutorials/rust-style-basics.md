@@ -54,7 +54,7 @@ cargo --version
 max_width = 100
 ```
 
-之後每次提交前執行：
+之後每次提交前執行（多個 crate 的 workspace 專案請加上 `--workspace`）：
 
 ```console
 cargo fmt --check
@@ -187,7 +187,155 @@ Negative
 - 格式化永遠交給 `cargo fmt`；`rustfmt.toml` 放在專案根目錄，所有人共用。
 - 風格指南偏好**小而專注的 crate**，一個 crate 負責一件事；專案變大時用 workspace 把多個 crate 放在同一個 repo。
 - 第三方依賴要審慎：每多一個依賴就多一份維護與安全責任。
+- 專案變大時用 workspace 拆成多個小 crate（見下一章）。
 - 提交前固定跑 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`，這三個指令就是風格指南的自動把關。
+
+## Workspace：多個 crate 一起管理
+Duration: 12
+
+### 為什麼需要 workspace？
+
+Google Rust Style Guide 偏好**小而專注的 crate**：一個 crate 做一件事，彼此透過明確的 API 相依。專案變大之後，把所有 crate 放進同一個 repo 並用 **workspace** 統一管理，就能：
+
+- 共用同一個 `Cargo.lock` 與 `target/`，依賴只下載、編譯一次。
+- 用一個指令檢查、測試所有 crate。
+- 統一版本號、edition、依賴版本與 lint 規則。
+
+### 目錄結構
+
+```text
+my-workspace/
+├── Cargo.toml          workspace 根（不是 package）
+├── Cargo.lock          整個 workspace 共用
+├── target/             整個 workspace 共用
+└── crates/
+    ├── greeter/        函式庫 crate
+    │   ├── Cargo.toml
+    │   └── src/lib.rs
+    └── app/            執行檔 crate
+        ├── Cargo.toml
+        └── src/main.rs
+```
+
+### 根目錄的 Cargo.toml
+
+```toml
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+greeter = { path = "crates/greeter" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+```
+
+| 區塊 | 意義 |
+|------|------|
+| `[workspace]` | 宣告這是 workspace；`members` 列出成員，可用 `crates/*` 萬用字元 |
+| `resolver = "2"` | 依賴解析器版本，新的 workspace 建議明確寫出 |
+| `[workspace.package]` | 成員可繼承的欄位（版本、edition 等） |
+| `[workspace.dependencies]` | 全 workspace 統一的依賴版本，成員用 `.workspace = true` 引用 |
+| `[workspace.lints]` | 全 workspace 統一的 lint 規則 |
+
+Negative
+: workspace 根的 Cargo.toml 如果同時有 `[package]`，它會同時是一個 crate（稱為 root package）。初學時建議根目錄只放 `[workspace]`，讓結構單純。
+
+### 成員 crate 的 Cargo.toml
+
+函式庫 `crates/greeter/Cargo.toml`：
+
+```toml
+[package]
+name = "greeter"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+```
+
+執行檔 `crates/app/Cargo.toml`，依賴同一個 workspace 內的 `greeter`：
+
+```toml
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+greeter.workspace = true
+
+[lints]
+workspace = true
+```
+
+`version.workspace = true` 表示沿用根目錄的設定；`[lints] workspace = true` 表示套用根目錄的 lint 規則，這樣所有 crate 都受同一組風格規則約束，不會有人漏設。
+
+### 程式碼
+
+`crates/greeter/src/lib.rs`：
+
+```text
+//! 問候語產生器。
+
+/// 回傳給指定名稱的問候語。
+pub fn greet(name: &str) -> String {
+    format!("你好，{name}！")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greets_by_name() {
+        assert_eq!(greet("Rust"), "你好，Rust！", "問候語格式不符");
+    }
+}
+```
+
+`crates/app/src/main.rs`：
+
+```text
+fn main() {
+    println!("{}", greeter::greet("workspace"));
+}
+```
+
+Positive
+: 這兩個檔案依賴其他 crate，無法像其他章節的範例一樣單獨編譯，所以用純文字呈現。整個 workspace 已在實際專案中通過 cargo fmt、clippy 與 cargo test 的檢查。
+
+### 常用指令
+
+| 指令 | 用途 |
+|------|------|
+| `cargo build --workspace` | 編譯所有成員 |
+| `cargo test --workspace` | 測試所有成員 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 檢查所有成員 |
+| `cargo fmt --all --check` | 檢查所有成員的格式 |
+| `cargo run -p app` | 只執行指定 crate |
+| `cargo test -p greeter` | 只測試指定 crate |
+
+在 workspace 內任何子目錄執行 cargo，都會找到根目錄的設定。不加 `--workspace` 時，只會作用在目前所在的 crate（或根 package）。
+
+### 風格指南相關重點
+
+- **小 crate**：一個 crate 負責一個明確的概念，需要時再拆分，避免一個巨大的 crate 包辦一切。
+- **統一管理**：版本、edition、依賴與 lint 集中在根目錄，成員用 `workspace = true` 繼承，避免各 crate 規則不一致。
+- **依賴方向**：下層函式庫不要依賴上層的執行檔；crate 之間不能循環依賴，編譯器會直接拒絕。
+- **CI 一致**：CI 使用 `--workspace` 指令，確保每個成員都被檢查，不會有 crate 被漏掉。
+
+Negative
+: `[workspace.lints]` 繼承需要 Rust 1.74 以上，`[workspace.package]` 與 `[workspace.dependencies]` 需要 1.64 以上。
 
 ## 變數、型別與函式
 Duration: 8
